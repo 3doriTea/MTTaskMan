@@ -1,0 +1,555 @@
+﻿#include <dpp/dpp.h>
+#include <iostream>
+#include "json/JsonReader.h"
+#include "Alarm.h"
+#include <string>
+#include <vector>
+#include <mutex>
+#include <list>
+#include <cstdint>
+#include <map>
+#include <utility>
+#include "Utility.h"
+#include "Task.h"
+#include "UserData.h"
+#include "embeds/help.h"
+#include "embeds/task.h"
+
+/*
+* あくまでも完成がメイン -> きれいにするのは後回しになってしまった…
+*/
+
+int main()
+{
+	using std::cout;
+	using std::endl;
+	using Task::TaskContent;
+	using json = nlohmann::json;
+
+	std::promise<int> onAram{};
+	std::future<int> onAramFuture{ onAram.get_future() };
+
+	JsonReader* config = new JsonReader{ "private/config.json", true };
+	JsonReader* users = new JsonReader{ "private/users.json", true };
+	JsonReader* last = new JsonReader{ "private/last.json" };
+	JsonReader* tasks = new JsonReader{ "private/task.json" };
+
+	std::mutex jsonWriteMutex{};  // jsonに書き込む際の排他制御用
+	
+	dpp::cluster bot(config->Json()["TOKEN"].get<std::string>());
+
+	bot.on_log(dpp::utility::cout_logger());
+
+	// コマンドを受信
+	bot.on_slashcommand([&bot, &tasks, &config, &users, &jsonWriteMutex](const dpp::slashcommand_t& event)
+		{
+			using dpp::utility::timestamp;
+			using dpp::utility::time_format;
+			using dpp::utility::user_mention;
+			using dpp::utility::user_url;
+
+			if (users->Json()[std::to_string(event.command.usr.id)]["white"].get<bool>() == false)
+			{
+				event.reply(dpp::message(ToString(u8"-# 権限がありません。")).set_flags(dpp::m_ephemeral));
+				return;  // ホワイトリストに乗っていないユーザからのコマンドは回帰
+			}
+
+			// 各コマンドに反応
+			std::string commandName{ event.command.get_command_name() };
+			if (commandName == "ping")
+			{
+				event.reply("Pong!");
+			}
+			else if (commandName == "help")
+			{
+				// ヘルプのembed返す
+				event.reply(dpp::message(
+					event.command.channel_id,
+					GenerateEmbedHelp(tasks))
+					.set_flags(dpp::m_ephemeral));
+			}
+			else if (commandName == "newtask")
+			{
+				TaskContent content{};
+
+				content.name = std::get<std::string>(event.get_parameter("name"));
+
+				// タスク名の重複 + 総額 を探索
+				int64_t totalCost{ 0 };
+				for (auto& taskContentJson : tasks->Json()["list"])
+				{
+					if (taskContentJson["name"].get<std::string>() == content.name)
+					{
+						event.reply(dpp::message(ToString(u8"既存のタスクと名前が重複しています。")).set_flags(dpp::m_ephemeral));
+						return;
+					}
+
+					totalCost += taskContentJson["price"].get<int32_t>();
+				}
+
+				const int64_t INCOME{ config->Json()["INCOME"].get<int64_t>() };
+
+				if (totalCost == INCOME)
+				{
+					event.reply(dpp::message(ToString(u8"現在タスクの総額が上限に達しています。\nタスクを消化してください。")).set_flags(dpp::m_ephemeral));
+					return;  // 総額に達している場合は回帰
+				}
+
+				dpp::message message{ ToString(u8"新しいタスクを発行しました。") };
+
+				content.price = static_cast<int32_t>(std::get<int64_t>(event.get_parameter("price")));
+
+				if ((content.price + totalCost) > INCOME)
+				{
+					content.price = INCOME - totalCost;  // 上限に収まる価格に変更
+					message.content += ToString(u8"\nなお、リクエストされた価格が上限を超えるため価格下げを行いました。");
+				}
+
+				// (1日 = 60 * 60 * 24 秒) * (期限時間(日にち単位)) + 現在時刻 = 期限時刻
+				content.deadline = static_cast<time_t>(
+						(60.0 * 60.0 * 24.0)
+						* (std::get<double_t>(event.get_parameter("deadline")))
+					) + std::time(nullptr);
+
+				content.description = std::get<std::string>(event.get_parameter("description"));
+
+				content.author = event.command.usr.id;
+
+				{  // 排他制御
+					std::lock_guard<std::mutex> lock(jsonWriteMutex);
+					tasks->Json()["list"].push_back(content);
+					tasks->TrySave();
+				}
+
+				message.add_embed(GenerateEmbed::TaskUnassigned(&content, &event.command.usr));
+
+				event.reply(message);
+			}
+			else if (commandName == "tasks")
+			{
+				size_t size{ tasks->Json()["list"].size() };
+				if (size <= 0)
+				{
+					event.reply(ToString(u8"今のところタスクはありません！ 🎉"));
+					return;  // タスク無いならreturn
+				}
+
+				// タスクがあるなら状況分けして表示
+
+				auto descInsertFunc  // 降順で適切な場所に挿入するラムダ式
+				{
+					[](std::list<TaskContent*>& contentList, TaskContent* content) -> void
+					{
+						for (auto&& itr = contentList.begin(); itr != contentList.end(); itr++)
+						{
+							if ((*itr)->deadline > content->deadline)
+							{
+								contentList.insert(itr, content);
+								return;
+							}
+						}
+
+						contentList.push_back(content);  // ヒットしなければ最後尾に追加
+					}
+				};
+
+				std::list<TaskContent*> inProgressTasks{};  // 順調に進行中のタスクたち
+				std::list<TaskContent*> unassignedTasks{};  // 請負人がいないタスクたち
+				std::list<TaskContent*> outTasks{};         // 期限超過してるタスクたち
+
+				time_t nowTime{ std::time(nullptr) };  // 今の時刻
+
+				// 全タスク周回 + 総額計算
+				int64_t totalCost{ 0 };
+				for (auto& taskContentJson : tasks->Json()["list"])
+				{
+					TaskContent* taskContent{ new TaskContent{ taskContentJson.get<TaskContent>() } };
+
+					totalCost += taskContent->price;  // 総額加算
+
+					// タスクの振り分け
+
+					if (taskContent->deadline > nowTime)  // 期限内か
+					{
+						if (taskContent->undertakers.size() > 0)  // 請負人がいるか
+						{
+							// 問題なく進行中のタスクとして追加
+							descInsertFunc(inProgressTasks, taskContent);
+						}
+						else
+						{
+							// 請負人がいないタスクとして追加
+							descInsertFunc(unassignedTasks, taskContent);
+						}
+					}
+					else
+					{
+						// 期限超過のタスクとして追加 (まずい…)
+						descInsertFunc(outTasks, taskContent);
+					}
+				}
+
+				// 返信するメッセージに追加していく
+				dpp::message message{};
+
+				std::stringstream stream{};
+				for (auto& content : outTasks)
+				{
+					message.add_embed(GenerateEmbed::TaskOut(content, dpp::find_user(content->author)));
+				}
+
+				for (auto& content : unassignedTasks)
+				{
+					message.add_embed(GenerateEmbed::TaskUnassigned(content, dpp::find_user(content->author)));
+				}
+
+				for (auto& content : inProgressTasks)
+				{
+					message.add_embed(GenerateEmbed::TaskInProgress(content, dpp::find_user(content->author)));
+				}
+
+				// 概要のembed追加
+				message.add_embed(GenerateEmbed::About(
+					inProgressTasks,
+					unassignedTasks,
+					outTasks,
+					config->Json()["INCOME"].get<int64_t>(),
+					totalCost));
+
+				// 文字追加
+				message.set_content(stream.str());
+
+				event.reply(message);  // 返信！
+			}
+			else if (commandName == "dotask")
+			{
+				if (tasks->Json()["list"].size() <= 0)
+				{
+					event.reply(ToString(u8"今のところタスクはありません！ 🎉"));
+					return;  // タスク無いなら回帰
+				}
+
+				std::string requestTaskName{ std::get<std::string>(event.get_parameter("donthavetaskname")) };
+
+				for (auto& contentJson : tasks->Json()["list"])
+				{
+					TaskContent content{ contentJson.get<TaskContent>() };
+
+					if (content.name != requestTaskName)
+					{
+						continue;  // タスク名不一致なら別の
+					}
+
+					for (auto& undertaker : content.undertakers)
+					{
+						if (undertaker == event.command.usr.id)
+						{
+							event.reply(
+								dpp::message(ToString(u8"既に請負人になっています！"))
+									.set_flags(dpp::m_ephemeral));
+							return;  // 既に請負人なら回帰
+						}
+					}
+
+					content.undertakers.push_back(event.command.usr.id);
+
+					{  // 排他制御
+						std::lock_guard<std::mutex> lock(jsonWriteMutex);
+						contentJson = content;
+						tasks->TrySave();
+					}
+
+					dpp::message message
+					{
+						ToString(u8"タスクを受諾しました。(期限")
+							+ timestamp(content.deadline, time_format::tf_relative_time)
+							+ ")"
+					};
+					message.add_embed(GenerateEmbed::TaskInProgress(&content, &event.command.usr));
+
+					event.reply(message);
+					return;  // 受諾できたら回帰
+				}
+
+				event.reply(ToString(u8"タスクの名前が一致しません。"));
+				return;  // 名前不一致で回帰
+			}
+			else if (commandName == "comptask")
+			{
+				if (tasks->Json()["list"].size() <= 0)
+				{
+					event.reply(ToString(u8"今のところタスクはありませよ！ 🎉"));
+					return;  // タスク無いなら回帰
+				}
+
+				std::string compTaskName{ std::get<std::string>(event.get_parameter("havetaskname")) };
+
+				// タスクの探索
+				int taskIndex{ -1 };
+				for (auto& contentJson : tasks->Json()["list"])
+				{
+					taskIndex++;
+
+					TaskContent content{ contentJson.get<TaskContent>() };
+
+					if (content.name != compTaskName)
+					{
+						continue;  // タスク名不一致なら別の
+					}
+
+					// 請負人か探索
+					bool isUndertaker{ false };
+					for (auto& undertaker : content.undertakers)
+					{
+						if (undertaker == event.command.usr.id)
+						{
+							isUndertaker = true;
+							break;
+						}
+					}
+
+					if (isUndertaker == false)
+					{
+						event.reply(dpp::message(ToString(u8"あなたはこのタスクの請負人ではありません！")).set_flags(dpp::m_ephemeral));
+						return;  // 請負人ではないなら回帰
+					}
+
+					tasks->Json()["archive"].push_back(content);
+					tasks->Json()["list"].erase(taskIndex);
+
+					{  // 排他制御
+						std::lock_guard<std::mutex> lock(jsonWriteMutex);
+						tasks->TrySave();
+					}
+
+					event.reply(ToString(u8"タスクを完了しました。🎉\n-# お疲れ様！おめでとう！"));
+					return;  // 完了できたら回帰
+				}
+
+				event.reply(dpp::message(ToString(u8"タスクの名前が一致しません。")).set_flags(dpp::m_ephemeral));
+				return;  // 名前不一致で回帰
+			}
+		});
+
+	// 準備中...　コマンドの登録とか
+	bot.on_ready([&bot, &config, &tasks](const dpp::ready_t& event)
+		{
+			if (dpp::run_once<struct register_bot_commands>())
+			{
+#if false  // もしコマンドを綺麗さっぱり削除するならture
+				bot.global_bulk_command_delete();
+				return;
+#endif
+
+				std::u8string description{};
+				std::vector<dpp::slashcommand> slashcommands{};
+
+#pragma region コマンドの登録
+				description = u8"疎通確認をする";
+				slashcommands.push_back(
+					dpp::slashcommand("ping", { description.begin(), description.end() }, bot.me.id));
+
+
+				description = u8"ヘルプを確認する";
+				slashcommands.push_back(
+					dpp::slashcommand("help", { description.begin(), description.end() }, bot.me.id));
+				
+
+				description = u8"新しいタスクを発行する";
+				slashcommands.push_back(
+					dpp::slashcommand("newtask", { description.begin(), description.end() }, bot.me.id)
+					.add_option(
+						dpp::command_option(
+							dpp::co_string,
+							"name",
+							ToString(u8"タスクの名前(検索時に打ちやすい文字列を推奨)"),
+							true))
+					.add_option(
+						dpp::command_option(
+							dpp::co_integer,
+							"price",
+							ToString(u8"タスクの値段"),
+							true)
+							.set_min_value(0LL)
+							.set_max_value(config->Json()["INCOME"].get<long long>()))
+					.add_option(
+						dpp::command_option(
+							dpp::co_number,
+							"deadline",
+							ToString(u8"タスクの締め切り(%f日後)"),
+							true)
+							.set_min_value(0.0)
+							.set_max_value(30.0))
+					.add_option(
+						dpp::command_option(
+							dpp::co_string,
+							"description",
+							ToString(u8"タスクの詳細な説明"),
+							true)));
+				
+
+				description = u8"発行されているタスクを確認する";
+				slashcommands.push_back(
+					dpp::slashcommand("tasks", { description.begin(), description.end() }, bot.me.id));
+				
+
+				description = u8"タスクを引き受ける";
+				slashcommands.push_back(
+					dpp::slashcommand("dotask", { description.begin(), description.end() }, bot.me.id)
+					.add_option(
+						dpp::command_option(
+							dpp::co_string,
+							"donthavetaskname",
+							ToString(u8"引き受けるタスクの名前"),
+							true)
+						.set_auto_complete(true)));
+
+
+				description = u8"タスクを完了する";
+				slashcommands.push_back(
+					dpp::slashcommand("comptask", { description.begin(), description.end() }, bot.me.id)
+					.add_option(
+						dpp::command_option(
+							dpp::co_string,
+							"havetaskname",
+							ToString(u8"完了するタスクの名前"),
+							true)
+						.set_auto_complete(true)));
+#pragma endregion
+
+				// 一気にまとめて登録 && jsonにもカキカキ
+				bot.global_bulk_command_create(slashcommands, [&tasks](const dpp::confirmation_callback_t& confirmation)
+					{
+						dpp::slashcommand_map commands{ confirmation.get<dpp::slashcommand_map>() };
+						for (auto& command : commands)
+						{
+							// コマンドidをjsonに保存
+							tasks->Json()["command-ids"][command.second.name] = command.first;
+							tasks->TrySave();
+						}
+					});
+			}
+		});
+
+	// 自動補完の応答
+	bot.on_autocomplete([&bot, &tasks](const dpp::autocomplete_t& autocompolete)
+		{
+			for (auto& option : autocompolete.options)
+			{
+				// 全タスク名
+				if (option.name == "taskname")
+				{
+					std::string inputValue{ std::get<std::string>(option.value) };
+
+					dpp::interaction_response response = dpp::interaction_response(dpp::ir_autocomplete_reply);
+
+					for (auto& taskContent : tasks->Json()["list"])
+					{
+						response.add_autocomplete_choice(dpp::command_option_choice(
+							taskContent["name"].get<std::string>(), taskContent["name"].get<std::string>()));
+					}
+
+					bot.interaction_response_create(autocompolete.command.id, autocompolete.command.token, response);
+					break;
+				}
+				// 持っているタスク名
+				else if (option.name == "havetaskname")
+				{
+					dpp::snowflake userId{ autocompolete.command.usr.id };
+
+					std::string inputValue{ std::get<std::string>(option.value) };
+					dpp::interaction_response response = dpp::interaction_response(dpp::ir_autocomplete_reply);
+
+					// TODO: タスクの探索は非効率すぎるため、ユーザごとに持っているタスクを保持する
+					// 全タスクを探索
+					for (auto& taskContent : tasks->Json()["list"])
+					{
+						// 請負人の探索
+						for (auto& undertakerJson : taskContent["undertakers"])
+						{
+							// 請負人に含まれているか
+							if (static_cast<dpp::snowflake>(undertakerJson.get<std::string>()) == userId)
+							{
+								response.add_autocomplete_choice(dpp::command_option_choice(
+									taskContent["name"].get<std::string>(), taskContent["name"].get<std::string>()));
+								break;  // 含まれているなら探索終了
+							}
+						}
+					}
+
+					bot.interaction_response_create(autocompolete.command.id, autocompolete.command.token, response);
+					break;
+				}
+				// 持っていないタスク名
+				else if (option.name == "donthavetaskname")
+				{
+					dpp::snowflake userId{ autocompolete.command.usr.id };
+
+					std::string inputValue{ std::get<std::string>(option.value) };
+					dpp::interaction_response response = dpp::interaction_response(dpp::ir_autocomplete_reply);
+
+					// TODO: タスクの探索は非効率すぎるため、ユーザごとに持っているタスクを保持する
+					// 全タスクを探索
+					for (auto& taskContent : tasks->Json()["list"])
+					{
+						// 請負人の探索
+						bool isUndertaker{ false };
+						for (auto& undertakerJson : taskContent["undertakers"])
+						{
+							// 請負人に含まれているか
+							if (static_cast<dpp::snowflake>(undertakerJson.get<std::string>()) == userId)
+							{
+								isUndertaker = true;
+								break;  // 含まれているなら探索終了
+							}
+						}
+
+						// 請負人にいないなら候補に追加
+						if (isUndertaker == false)
+						{
+							response.add_autocomplete_choice(dpp::command_option_choice(
+								taskContent["name"].get<std::string>(), taskContent["name"].get<std::string>()));
+						}
+					}
+
+					bot.interaction_response_create(autocompolete.command.id, autocompolete.command.token, response);
+					break;
+				}
+			}
+		});
+
+	// メッセージ受信
+	bot.on_message_create([&bot, &users](const dpp::message_create_t& event)
+		{
+			if (users->Json()[std::to_string(event.msg.author.id)]["white"].get<bool>() == false)
+			{
+				return;  // ホワイトリストに乗っていないユーザからのメッセージは回帰
+			}
+
+			return;
+
+			dpp::snowflake id = event.msg.channel_id;
+			std::u8string message{ u8"検知" };
+			event.reply(std::string { message.begin(), message.end() });
+			//
+		});
+
+	Alarm alarm{ last->Json()["lastTime"].get<long long>() };
+
+	alarm.Run();
+
+	alarm.OnAlarm([&bot, &last](Alarm::CallType callType)
+		{
+			last->Json()["lastTime"] = std::time(nullptr);
+			last->TrySave();
+		});
+
+	bot.start(dpp::st_wait);
+
+	alarm.Join();  // 非同期を待つ
+
+	delete config;
+	delete users;
+	delete last;
+	delete tasks;
+}
