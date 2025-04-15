@@ -4,4 +4,5 @@
 for (auto& p : list)            \
 {                               \
 	delete p;                   \
-}
+}                               \
+list.clear()
