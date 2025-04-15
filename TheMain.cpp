@@ -68,7 +68,7 @@ int main()
 				// ヘルプのembed返す
 				event.reply(dpp::message(
 					event.command.channel_id,
-					GenerateEmbedHelp(tasks))
+					GenerateEmbed::Help(tasks))
 					.set_flags(dpp::m_ephemeral));
 			}
 			else if (commandName == "newtask")

@@ -6,7 +6,6 @@
 
 namespace GenerateEmbed
 {
-
 	dpp::embed About(
 		const std::list<Task::TaskContent*>& _inProgressTasks,
 		const std::list<Task::TaskContent*>& _unassignedTasks,

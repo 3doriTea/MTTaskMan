@@ -3,7 +3,7 @@
 #include "json/JsonReader.h"
 #include "Utility.h"
 
-dpp::embed GenerateEmbedHelp(JsonReader* tasks)
+dpp::embed GenerateEmbed::Help(JsonReader* tasks)
 {
 	using dpp::utility::slashcommand_mention;
 	return dpp::embed()

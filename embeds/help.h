@@ -3,4 +3,7 @@
 
 class JsonReader;
 
-dpp::embed GenerateEmbedHelp(JsonReader* tasks);
+namespace GenerateEmbed
+{
+	dpp::embed Help(JsonReader* tasks);
+}
