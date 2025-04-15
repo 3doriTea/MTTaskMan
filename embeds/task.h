@@ -1,11 +1,12 @@
 #pragma once
 #include <list>
 #include <dpp/dpp.h>
-#include <Task.h>
+#include "../Task.h"
 #include <string>
 
 namespace GenerateEmbed
 {
+
 	dpp::embed About(
 		const std::list<Task::TaskContent*>& _inProgressTasks,
 		const std::list<Task::TaskContent*>& _unassignedTasks,

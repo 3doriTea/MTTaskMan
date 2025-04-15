@@ -14,6 +14,8 @@
 #include "UserData.h"
 #include "embeds/help.h"
 #include "embeds/task.h"
+#include "embeds/user.h"
+#include "ReleaseUtility.h"
 
 /*
 * あくまでも完成がメイン -> きれいにするのは後回しになってしまった…
@@ -24,6 +26,7 @@ int main()
 	using std::cout;
 	using std::endl;
 	using Task::TaskContent;
+	using UserData::UserContent;
 	using json = nlohmann::json;
 
 	std::promise<int> onAram{};
@@ -136,23 +139,6 @@ int main()
 
 				// タスクがあるなら状況分けして表示
 
-				auto descInsertFunc  // 降順で適切な場所に挿入するラムダ式
-				{
-					[](std::list<TaskContent*>& contentList, TaskContent* content) -> void
-					{
-						for (auto&& itr = contentList.begin(); itr != contentList.end(); itr++)
-						{
-							if ((*itr)->deadline > content->deadline)
-							{
-								contentList.insert(itr, content);
-								return;
-							}
-						}
-
-						contentList.push_back(content);  // ヒットしなければ最後尾に追加
-					}
-				};
-
 				std::list<TaskContent*> inProgressTasks{};  // 順調に進行中のタスクたち
 				std::list<TaskContent*> unassignedTasks{};  // 請負人がいないタスクたち
 				std::list<TaskContent*> outTasks{};         // 期限超過してるタスクたち
@@ -174,25 +160,24 @@ int main()
 						if (taskContent->undertakers.size() > 0)  // 請負人がいるか
 						{
 							// 問題なく進行中のタスクとして追加
-							descInsertFunc(inProgressTasks, taskContent);
+							Task::InsertListDesc(inProgressTasks, taskContent);
 						}
 						else
 						{
 							// 請負人がいないタスクとして追加
-							descInsertFunc(unassignedTasks, taskContent);
+							Task::InsertListDesc(unassignedTasks, taskContent);
 						}
 					}
 					else
 					{
 						// 期限超過のタスクとして追加 (まずい…)
-						descInsertFunc(outTasks, taskContent);
+						Task::InsertListDesc(outTasks, taskContent);
 					}
 				}
 
 				// 返信するメッセージに追加していく
 				dpp::message message{};
 
-				std::stringstream stream{};
 				for (auto& content : outTasks)
 				{
 					message.add_embed(GenerateEmbed::TaskOut(content, dpp::find_user(content->author)));
@@ -216,16 +201,17 @@ int main()
 					config->Json()["INCOME"].get<int64_t>(),
 					totalCost));
 
-				// 文字追加
-				message.set_content(stream.str());
-
 				event.reply(message);  // 返信！
+
+				SAFE_DELETE_LIST(inProgressTasks);
+				SAFE_DELETE_LIST(unassignedTasks);
+				SAFE_DELETE_LIST(outTasks);
 			}
 			else if (commandName == "dotask")
 			{
 				if (tasks->Json()["list"].size() <= 0)
 				{
-					event.reply(ToString(u8"今のところタスクはありません！ 🎉"));
+					event.reply(ToString(u8"今のところタスクはありませよ！ 🎉"));
 					return;  // タスク無いなら回帰
 				}
 
@@ -261,11 +247,18 @@ int main()
 
 					dpp::message message
 					{
-						ToString(u8"タスクを受諾しました。(期限")
-							+ timestamp(content.deadline, time_format::tf_relative_time)
-							+ ")"
+						ToString(u8"タスクを受諾しました。(期限)")
 					};
-					message.add_embed(GenerateEmbed::TaskInProgress(&content, &event.command.usr));
+
+					if (content.deadline >= std::time(nullptr))
+					{
+						message.add_embed(GenerateEmbed::TaskInProgress(&content, &event.command.usr));
+					}
+					else
+					{
+						message.add_embed(GenerateEmbed::TaskOut(&content, &event.command.usr));
+					}
+
 
 					event.reply(message);
 					return;  // 受諾できたら回帰
@@ -314,12 +307,46 @@ int main()
 						return;  // 請負人ではないなら回帰
 					}
 
-					tasks->Json()["archive"].push_back(content);
-					tasks->Json()["list"].erase(taskIndex);
+					// 期限を超過しているか
+					bool isOutDeadline{ false };
+					if (content.deadline < std::time(nullptr))
+					{
+						isOutDeadline = true;
+					}
+
+					for (auto& undertakerId : content.undertakers)
+					{
+						UserContent userContent{ users->Json()[std::to_string(undertakerId)].get<UserContent>() };
+
+						// userContent.write = true;
+						userContent.completedTotalCount++;
+						userContent.completedTotalPrice += content.price;
+
+						if (isOutDeadline)
+						{
+							// 期限超過なら科料分を引く
+							userContent.money -= content.price;
+						}
+						else
+						{
+							// 期限内なら分けて加算
+							userContent.money += content.price / content.undertakers.size();
+						}
+
+						{  // 排他制御
+							std::lock_guard<std::mutex> lock(jsonWriteMutex);
+							users->Json()[std::to_string(undertakerId)] = userContent;
+						}
+					}
 
 					{  // 排他制御
 						std::lock_guard<std::mutex> lock(jsonWriteMutex);
+
+						tasks->Json()["archive"].push_back(content);
+						tasks->Json()["list"].erase(taskIndex);
+
 						tasks->TrySave();
+						users->TrySave();
 					}
 
 					event.reply(ToString(u8"タスクを完了しました。🎉\n-# お疲れ様！おめでとう！"));
@@ -329,6 +356,79 @@ int main()
 				event.reply(dpp::message(ToString(u8"タスクの名前が一致しません。")).set_flags(dpp::m_ephemeral));
 				return;  // 名前不一致で回帰
 			}
+			else if (commandName == "myinfo")
+			{
+				// 返信するメッセージに追加していく
+				dpp::message message{};
+
+				// タスクがあるなら状況分けして表示
+
+				std::list<TaskContent*> inProgressTasks{};  // 順調に進行中のタスクたち
+				std::list<TaskContent*> outTasks{};         // 期限超過してるタスクたち
+
+				time_t nowTime{ std::time(nullptr) };  // 今の時刻
+
+				// 全タスク周回 + 総額計算
+				int64_t totalCost{ 0 };
+				for (auto& taskContentJson : tasks->Json()["list"])
+				{
+					TaskContent* taskContent{ new TaskContent{ taskContentJson.get<TaskContent>() } };
+
+					// 請負人かどうか探索
+					bool isUndertaker{ false };
+					for (auto& undertaker : taskContent->undertakers)
+					{
+						if (undertaker == event.command.usr.id)
+						{
+							isUndertaker = true;
+							break;
+						}
+					}
+
+					if (isUndertaker == false)
+					{
+						continue;  // 請負人でないなら回帰
+					}
+
+					totalCost += taskContent->price;  // 総額加算
+
+					// タスクの振り分け
+
+					if (taskContent->deadline > nowTime)  // 期限内か
+					{
+						// 問題なく進行中のタスクとして追加
+						Task::InsertListDesc(inProgressTasks, taskContent);
+					}
+					else
+					{
+						// 期限超過のタスクとして追加 (まずい…)
+						Task::InsertListDesc(outTasks, taskContent);
+					}
+				}
+
+				for (auto& content : outTasks)
+				{
+					message.add_embed(GenerateEmbed::TaskOut(content, dpp::find_user(content->author)));
+				}
+
+				for (auto& content : inProgressTasks)
+				{
+					message.add_embed(GenerateEmbed::TaskInProgress(content, dpp::find_user(content->author)));
+				}
+
+				// 概要のembed追加
+				message.add_embed(GenerateEmbed::UserInfo(
+					inProgressTasks,
+					outTasks,
+					users->Json()[std::to_string(event.command.usr.id)].get<UserContent>(),
+					&event.command.usr));
+
+				event.reply(message);  // 返信！
+
+				SAFE_DELETE_LIST(outTasks);
+				SAFE_DELETE_LIST(inProgressTasks);
+			}
+
 		});
 
 	// 準備中...　コマンドの登録とか
@@ -354,6 +454,11 @@ int main()
 				slashcommands.push_back(
 					dpp::slashcommand("help", { description.begin(), description.end() }, bot.me.id));
 				
+
+				description = u8"自分の情報を確認する";
+				slashcommands.push_back(
+					dpp::slashcommand("myinfo", { description.begin(), description.end() }, bot.me.id));
+
 
 				description = u8"新しいタスクを発行する";
 				slashcommands.push_back(

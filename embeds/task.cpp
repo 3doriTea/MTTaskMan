@@ -1,13 +1,6 @@
 ﻿#include "task.h"
 #include "../Utility.h"
-
-enum
-{
-	COLOR_WARN = 0xff0000,
-	COLOR_NOTE = 0xffd700,
-	COLOR_NORM = 0x00ff7f,
-	COLOR_FREE = 0x00ffff,
-};
+#include "Color.h"
 
 static inline std::string ToUserURLLocal(dpp::snowflake _userId)
 {

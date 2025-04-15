@@ -1,4 +1,5 @@
 #pragma once
+#include <list>
 
 namespace Task
 {
@@ -60,5 +61,20 @@ namespace Task
 		{
 			taskContent.undertakers.push_back(undertaker.get<std::string>());
 		}
+	}
+
+	// ~‡‚Å“KØ‚ÈêŠ‚É‘}“ü‚·‚éƒ‰ƒ€ƒ_®
+	static inline void InsertListDesc(std::list<TaskContent*>& contentList, TaskContent* content)
+	{
+		for (auto&& itr = contentList.begin(); itr != contentList.end(); itr++)
+		{
+			if ((*itr)->deadline > content->deadline)
+			{
+				contentList.insert(itr, content);
+				return;
+			}
+		}
+
+		contentList.push_back(content);  // ƒqƒbƒg‚µ‚È‚¯‚ê‚ÎÅŒã”ö‚É’Ç‰Á
 	}
 }

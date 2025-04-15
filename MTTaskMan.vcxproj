@@ -138,13 +138,17 @@
     <ClCompile Include="Alarm.cpp" />
     <ClCompile Include="embeds\help.cpp" />
     <ClCompile Include="embeds\task.cpp" />
+    <ClCompile Include="embeds\user.cpp" />
     <ClCompile Include="json\JsonReader.cpp" />
     <ClCompile Include="TheMain.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Alarm.h" />
+    <ClInclude Include="embeds\Color.h" />
     <ClInclude Include="embeds\help.h" />
+    <ClInclude Include="ReleaseUtility.h" />
     <ClInclude Include="embeds\task.h" />
+    <ClInclude Include="embeds\user.h" />
     <ClInclude Include="UserData.h" />
     <ClInclude Include="json\json.hpp" />
     <ClInclude Include="json\JsonReader.h" />

@@ -7,11 +7,11 @@ namespace UserData
 	struct UserContent
 	{
 		UserContent(
-			bool _write,
+			bool _white,
 			int64_t _money,
 			int64_t _completedTotalCount,
 			int64_t _completedTotalPrice) :
-			write{ _write },
+			white{ _white },
 			money{ _money },
 			completedTotalCount{ _completedTotalCount },
 			completedTotalPrice{ _completedTotalPrice }
@@ -21,7 +21,7 @@ namespace UserData
 			UserContent{ false, 0LL, 0LL, 0LL }
 		{}
 
-		bool write;                   // ホワイトリストに登録されているか
+		bool white;                   // ホワイトリストに登録されているか
 		int64_t money;                // 所持金
 		int64_t completedTotalCount;  // タスク達成数
 		int64_t completedTotalPrice;  // タスク達成総額
@@ -31,7 +31,7 @@ namespace UserData
 	{
 		j = nlohmann::json
 		{
-			{ "write", content.write },
+			{ "white", content.white },
 			{ "money", content.money },
 			{ "completedTotalCount", content.completedTotalCount },
 			{ "completedTotalPrice", content.completedTotalPrice }
@@ -40,9 +40,34 @@ namespace UserData
 
 	static inline void from_json(const nlohmann::json& j, UserContent& content)
 	{
-		j.at("write").get_to(content.write);
-		j.at("money").get_to(content.money);
-		j.at("completedTotalCount").get_to(content.completedTotalCount);
-		j.at("completedTotalPrice").get_to(content.completedTotalPrice);
+		j.at("white").get_to(content.white);
+
+		if (j.find("money").value().is_null())
+		{
+			content.money = 0;  // jsonで値がnullなら0を入れておく
+		}
+		else
+		{
+			j.at("money").get_to(content.money);
+		}
+
+		if (j.find("completedTotalCount").value().is_null())
+		{
+			content.completedTotalCount = 0;  // jsonで値がnullなら0を入れておく
+		}
+		else
+		{
+			j.at("completedTotalCount").get_to(content.completedTotalCount);
+		}
+
+		if (j.find("completedTotalPrice").value().is_null())
+		{
+			content.completedTotalPrice = 0;  // jsonで値がnullなら0を入れておく
+		}
+		else
+		{
+			j.at("completedTotalPrice").get_to(content.completedTotalPrice);
+		}
+
 	}
 }
