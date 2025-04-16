@@ -75,6 +75,7 @@ int main()
 			{
 				TaskContent content{};
 
+				content.id = tasks->Json()["list"].size() + tasks->Json()["archive"].size();
 				content.name = std::get<std::string>(event.get_parameter("name"));
 
 				// タスク名の重複 + 総額 を探索
@@ -237,10 +238,10 @@ int main()
 						}
 					}
 
-					content.undertakers.push_back(event.command.usr.id);
 
 					{  // 排他制御
 						std::lock_guard<std::mutex> lock(jsonWriteMutex);
+						content.undertakers.push_back(event.command.usr.id);
 						contentJson = content;
 						tasks->TrySave();
 					}
@@ -476,7 +477,7 @@ int main()
 							ToString(u8"タスクの値段"),
 							true)
 							.set_min_value(0LL)
-							.set_max_value(config->Json()["INCOME"].get<long long>()))
+							.set_max_value(config->Json()["INCOME"].get<int64_t>()))
 					.add_option(
 						dpp::command_option(
 							dpp::co_number,
@@ -484,7 +485,7 @@ int main()
 							ToString(u8"タスクの締め切り(%f日後)"),
 							true)
 							.set_min_value(0.0)
-							.set_max_value(30.0))
+							.set_max_value(config->Json()["DAYS_AHEAD_MAX"].get<double>()))
 					.add_option(
 						dpp::command_option(
 							dpp::co_string,
@@ -520,6 +521,37 @@ int main()
 							ToString(u8"完了するタスクの名前"),
 							true)
 						.set_auto_complete(true)));
+
+				/*description = u8"サブタスクに分割する";
+				slashcommands.push_back(
+					dpp::slashcommand("splitask", { description.begin(), description.end() }, bot.me.id)
+					.add_option(
+						dpp::command_option(
+							dpp::co_string,
+							"taskname",
+							ToString(u8"分割したいタスクの名前"),
+							true)
+						.set_auto_complete(true))
+					.add_option(
+						dpp::command_option(
+							dpp::co_string,
+							"name",
+							ToString(u8"サブタスクの名前(検索時に打ちやすい文字列を推奨)"),
+							true))
+					.add_option(
+						dpp::command_option(
+							dpp::co_number,
+							"deadline",
+							ToString(u8"サブタスクの締め切り(%f日後)"),
+							true)
+						.set_min_value(0.0)
+						.set_max_value(config->Json()["DAYS_AHEAD_MAX"].get<double>()))
+					.add_option(
+						dpp::command_option(
+							dpp::co_string,
+							"description",
+							ToString(u8"サブタスクの詳細な説明"),
+							true)));*/
 #pragma endregion
 
 				// 一気にまとめて登録 && jsonにもカキカキ

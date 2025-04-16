@@ -9,12 +9,14 @@ namespace Task
 	struct TaskContent
 	{
 		TaskContent(
+			int64_t _id,
 			std::string _name,
 			time_t _deadline,
 			int32_t _price,
 			std::string _description,
 			dpp::snowflake _author,
 			std::vector<dpp::snowflake> _undertakers) :
+			id{ _id },
 			name{ _name },
 			deadline{ _deadline },
 			price{ _price },
@@ -24,9 +26,10 @@ namespace Task
 		{}
 
 		TaskContent() :
-			TaskContent{ "", 0, 0, "", 0, {} }
+			TaskContent{ -1LL, "", 0, 0, "", 0, {} }
 		{}
 
+		int64_t id;                               // 固有識別子
 		std::string name;                         // 名前
 		time_t deadline;                          // 期限
 		int32_t price;                            // 値段
@@ -39,6 +42,7 @@ namespace Task
 	{
 		j = nlohmann::json
 		{
+			{ "id", taskContent.id },
 			{ "name", taskContent.name },
 			{ "deadline", taskContent.deadline },
 			{ "price", taskContent.price },
@@ -50,6 +54,7 @@ namespace Task
 
 	static inline void from_json(const nlohmann::json& j, TaskContent& taskContent)
 	{
+		j.at("id").get_to(taskContent.id);
 		j.at("name").get_to(taskContent.name);
 		j.at("deadline").get_to(taskContent.deadline);
 		j.at("price").get_to(taskContent.price);
