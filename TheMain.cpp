@@ -247,7 +247,7 @@ int main()
 
 					dpp::message message
 					{
-						ToString(u8"タスクを受諾しました。(期限)")
+						ToString(u8"タスクを受諾しました。")
 					};
 
 					if (content.deadline >= std::time(nullptr))
