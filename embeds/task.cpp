@@ -90,9 +90,33 @@ dpp::embed GenerateEmbed::About(
 	return embed;
 }
 
+dpp::embed GenerateEmbed::Task(
+	const Task::TaskContent* _pTask,
+	JsonReader* _pTasks)
+{
+	dpp::user* pUser{ dpp::find_user(_pTask->author) };
+
+	if (_pTask->deadline >= std::time(nullptr))  // 期限内
+	{
+		if (_pTask->undertakers.size() > 0)  // 請負人もいる
+		{
+			return TaskInProgress(_pTask, pUser, _pTasks);
+		}
+		else  // 請負人がいない
+		{
+			return TaskUnassigned(_pTask, pUser, _pTasks);
+		}
+	}
+	else // 期限超過
+	{
+		return TaskOut(_pTask, pUser, _pTasks);
+	}
+}
+
 dpp::embed GenerateEmbed::TaskOut(
 	const Task::TaskContent* _pTask,
-	const dpp::user* _author)
+	const dpp::user* _author,
+	JsonReader* _pTasks)
 {
 	using dpp::utility::timestamp;
 	using dpp::utility::time_format;
@@ -101,9 +125,23 @@ dpp::embed GenerateEmbed::TaskOut(
 
 	dpp::embed embed = dpp::embed()
 		.set_color(COLOR_WARN)
-		.set_author(_author->global_name, user_url(_pTask->author), _author->get_avatar_url())
-		.set_title(ToString(u8"**『") + _pTask->name + ToString(u8"』** ❌期限超過❌"))
 		.set_description(_pTask->description);
+
+	if (_author != nullptr)  // もしタスク発行者のキャッシュがあるなら
+	{
+		embed
+			.set_author(_author->global_name, user_url(_pTask->author), _author->get_avatar_url());
+	}
+
+	std::string parentName{};
+	if (_pTask->parentTaskId >= 0)
+	{
+		parentName = _pTasks->Json()["list"][std::to_string(_pTask->parentTaskId)]["name"].get<std::string>();
+		parentName += "\n> ";
+	}
+
+	embed
+		.set_title(parentName + ToString(u8"**『") + _pTask->name + ToString(u8"』** ❌期限超過❌"));
 
 	embed
 		.add_field(
@@ -139,7 +177,8 @@ dpp::embed GenerateEmbed::TaskOut(
 
 dpp::embed GenerateEmbed::TaskUnassigned(
 	const Task::TaskContent* _pTask,
-	const dpp::user* _author)
+	const dpp::user* _author,
+	JsonReader* _pTasks)
 {
 	using dpp::utility::timestamp;
 	using dpp::utility::time_format;
@@ -148,11 +187,25 @@ dpp::embed GenerateEmbed::TaskUnassigned(
 
 	dpp::embed embed = dpp::embed()
 		.set_color(COLOR_NOTE)
-		.set_author(_author->global_name, user_url(_pTask->author), _author->get_avatar_url())
-		.set_title(ToString(u8"**『") + _pTask->name + ToString(u8"』** ❕請負人ナシ❕"))
 		.set_description(_pTask->description)
 		.set_footer(ToString(u8"期限時刻"), "")
 		.set_timestamp(_pTask->deadline);
+
+	if (_author != nullptr)  // もしタスク発行者のキャッシュがあるなら
+	{
+		embed
+			.set_author(_author->global_name, user_url(_pTask->author), _author->get_avatar_url());
+	}
+
+	std::string parentName{};
+	if (_pTask->parentTaskId >= 0)
+	{
+		parentName = _pTasks->Json()["list"][std::to_string(_pTask->parentTaskId)]["name"].get<std::string>();
+		parentName += "\n> ";
+	}
+
+	embed
+		.set_title(parentName + ToString(u8"**『") + _pTask->name + ToString(u8"』** ❕請負人ナシ❕"));
 
 	embed
 		.add_field(
@@ -169,7 +222,8 @@ dpp::embed GenerateEmbed::TaskUnassigned(
 
 dpp::embed GenerateEmbed::TaskInProgress(
 	const Task::TaskContent* _pTask,
-	const dpp::user* _author)
+	const dpp::user* _author,
+	JsonReader* _pTasks)
 {
 	using dpp::utility::timestamp;
 	using dpp::utility::time_format;
@@ -178,11 +232,25 @@ dpp::embed GenerateEmbed::TaskInProgress(
 
 	dpp::embed embed = dpp::embed()
 		.set_color(COLOR_NORM)
-		.set_author(_author->global_name, user_url(_pTask->author), _author->get_avatar_url())
-		.set_title(ToString(u8"**『") + _pTask->name + ToString(u8"』** 🟢進行中🟢"))
 		.set_description(_pTask->description)
 		.set_footer(ToString(u8"期限時刻"), "")
 		.set_timestamp(_pTask->deadline);
+
+	if (_author != nullptr)  // もしタスク発行者のキャッシュがあるなら
+	{
+		embed
+			.set_author(_author->global_name, user_url(_pTask->author), _author->get_avatar_url());
+	}
+
+	std::string parentName{};
+	if (_pTask->parentTaskId >= 0)
+	{
+		parentName = _pTasks->Json()["list"][std::to_string(_pTask->parentTaskId)]["name"].get<std::string>();
+		parentName += "\n> ";
+	}
+
+	embed
+		.set_title(parentName + ToString(u8"**『") + _pTask->name + ToString(u8"』** 🟢進行中🟢"));
 
 	embed
 		.add_field(

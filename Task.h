@@ -10,6 +10,7 @@ namespace Task
 	{
 		TaskContent(
 			int64_t _id,
+			int64_t _parentTaskId,
 			std::string _name,
 			time_t _deadline,
 			int32_t _price,
@@ -17,6 +18,7 @@ namespace Task
 			dpp::snowflake _author,
 			std::vector<dpp::snowflake> _undertakers) :
 			id{ _id },
+			parentTaskId{ _parentTaskId },
 			name{ _name },
 			deadline{ _deadline },
 			price{ _price },
@@ -26,10 +28,11 @@ namespace Task
 		{}
 
 		TaskContent() :
-			TaskContent{ -1LL, "", 0, 0, "", 0, {} }
+			TaskContent{ -1LL, -1LL, "", 0, 0, "", 0, {} }
 		{}
 
 		int64_t id;                               // 固有識別子
+		int64_t parentTaskId;                     // 親タスクの固有識別子
 		std::string name;                         // 名前
 		time_t deadline;                          // 期限
 		int32_t price;                            // 値段
@@ -43,6 +46,7 @@ namespace Task
 		j = nlohmann::json
 		{
 			{ "id", taskContent.id },
+			{ "parentTaskId", taskContent.parentTaskId },
 			{ "name", taskContent.name },
 			{ "deadline", taskContent.deadline },
 			{ "price", taskContent.price },
@@ -55,6 +59,7 @@ namespace Task
 	static inline void from_json(const nlohmann::json& j, TaskContent& taskContent)
 	{
 		j.at("id").get_to(taskContent.id);
+		j.at("parentTaskId").get_to(taskContent.parentTaskId);
 		j.at("name").get_to(taskContent.name);
 		j.at("deadline").get_to(taskContent.deadline);
 		j.at("price").get_to(taskContent.price);
